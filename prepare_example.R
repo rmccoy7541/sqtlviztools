@@ -4,205 +4,162 @@ library(data.table)
 library(leafcutter)
 library(stringr)
 library(readr)
-
-
 library(sqtlviztools)
+library(qvalue)
 
-options(echo=TRUE)
+## set the parameters below
+cluster_id <- "clu_856_NA"
+target_variant <- "14_92931878_C_T_b37"
+target_gene <- "SLC24A4"
+permutation_sqtl_file <- "WHLBLD.permutations_full.txt.gz"
+vcf_file <- "sqtl.vcf"
+cluster_counts_file <- "Ne-sQTL_perind_numers.counts.gz"
+srr2subject_file <- "srr2subject.txt"
 
-# make example files
-#rs4733060	8:27302432	PTK2B	chr8:27308412-27309002
+## reformat VCF
+input_vcf <- fread(vcf_file) %>%
+  setnames(., "#CHROM", "CHROM")
+input_vcf[, 10:ncol(input_vcf)] <- as.data.frame(apply(input_vcf[, 10:ncol(input_vcf)], MAR = c(1, 2), FUN = function(x) if (x == "0/0") {return(0)} else if (x == "0/1") {return(1)} else if (x == "1/1") {return(2)} else if (x == "./.") {return("NA")} ))
+
+input_vcf[, ID := paste(ID, CHROM, POS, sep = ".")]
+
+input_vcf[, CHROM := as.character(CHROM)]
+input_vcf[!grepl("chr", CHROM), CHROM := paste0("chr", CHROM)]
+setnames(input_vcf, gsub("_.*", "", colnames(input_vcf)))
+
+fwrite(input_vcf, "example/example.vcf", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
+
+## reformat cluster counts
+input_cc <- fread(cluster_counts_file)
+input_cc[!(grepl("^chr", V1)), V1 := paste0("chr", V1)]
+
+srr2subject <- fread(srr2subject_file)
+new_colnames <- srr2subject$submitted_subject_id[match(colnames(input_cc), srr2subject$Run)]
+setnames(input_cc, new_colnames)
+
+input_cc <- input_cc[grepl(cluster_id, V1)]
+fwrite(input_cc, "example/cluster_counts_temp.txt", sep = "\t", quote = TRUE, col.names = TRUE, row.names = FALSE)
+system("head -1 example/cluster_counts_temp.txt | cut -f2- > example/cluster_counts.txt")
+system("sed -e1,1d example/cluster_counts_temp.txt >> example/cluster_counts.txt")
+system("rm example/cluster_counts_temp.txt")
+
+## reformat permutation-pass sQTL results
+gtp <- fread(permutation_sqtl_file) %>%
+  setnames(., c("intron_cluster", "chrom", "pheno_start", "pheno_end", 
+                "strand", "total_cis", "distance", "variant_id", "variant_chrom", 
+                "var_start", "var_end", "df", "dummy", "param_1", "param_2",
+                "p", "beta", "emp_p", "adj_p")) %>%
+  setorder(., adj_p)
+
+gtp[, qval := qvalue(gtp$adj_p)$qvalues]
+
+neand <- fread("sprime_calls.txt.gz")[vindija_match == "match" | altai_match == "match"] %>%
+  mutate(., var_id = paste(CHROM, POS, REF, ALT, "b37", sep = "_")) %>%
+  as.data.table()
+
+gtp[, logP := -log10(adj_p)]
+setorder(gtp, logP)
+gtp[, expectedP := rev(-log10(ppoints(n = length(gtp$adj_p))))]
+gtp[, is_neand := variant_id %in% neand$var_id]
+gtp[, dummy2 := paste(variant_id, variant_chrom, var_start, sep = ".")]
+gtp[, dummy3 := paste(variant_chrom, var_start, sep = ":")]
+
+pp_all <- gtp[variant_id == target_variant, c("intron_cluster", "dummy2", "adj_p")] %>%
+  setnames(., c("pid", "dummy2", "bpval"))
+fwrite(pp_all, "example/example_permutations.all.0.05.bh.txt", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
+
+# https://groups.google.com/forum/#!topic/leafcutter-users/Hb0S2aZBWtw
+pp_full <- gtp[variant_id == target_variant, c("intron_cluster", "dummy3", "distance", "adj_p", "beta")]
+fwrite(pp_full, "example/example_permutations.full.0.05.bh.txt", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+
+input_ids <- gtp[variant_id == target_variant, c("dummy3", "variant_id")] %>%
+  setnames(., c("dummy2", "RS_id"))
+fwrite(input_ids, "example/snp_ids_rs_ids.txt", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
+
+## reformat bed files
+exons <- fread("gencode_hg19_all_exons.bed.gz")
+fwrite(exons[gene_name == target_gene], "example/gencode_hg19_all_exons.bed", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
+
+introns <- fread("gencode_hg19_all_introns.bed.gz")[, c(1:7, 9, 8, 10)]
+fwrite(introns[V4 == target_gene], "example/gencode_hg19_all_introns.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+
+five_prime <- fread("gencode_hg19_fiveprime.bed.gz")
+fwrite(five_prime[V4 == target_gene], "example/gencode_hg19_fiveprime.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+
+three_prime <- fread("gencode_hg19_threeprime.bed.gz")
+fwrite(three_prime[V4 == target_gene], "example/gencode_hg19_threeprime.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+
+# clear workspace
+rm(list = ls())
+
+### original file starts here ###
+
+options(echo = TRUE)
 
 # example input files
 VCF <- "example/example.vcf"
-clusters_table <- "example/clu_52949_cluster_counts.txt"
+clusters_table <- "example/cluster_counts.txt"
 permutation_res <- "example/example_permutations.all.0.05.bh.txt"
 # p values and betas
 permutation_full_res <- "example/example_permutations.full.0.05.bh.txt"
-  #"clu_52949 8:27302432"
-
-# input files
-# sample_table <- "data/ROSMAP/rosmap.id.bam.map.tsv"
-# permutation_res <- "data/ROSMAP/permutations.all.ROSMAP.txt.gz.0.05.bh.txt"
-# VCF = "data/ROSMAP/all_samples.vcf.gz"
-# #clusters_table <- "data/ROSMAP/devsplicing_perind_numers.counts.gz"
-# clusters_table <- "data/ROSMAP/ROSMAP_all_samples_cluster_counts_split.Rdata"
-# permutation_full_res <- "data/ROSMAP/associations.all.ROSMAP.txt.gz"
-# #snp_conversion <- "data/ROSMAP/chrpos_rsid_dbsnp.txt.gz"
-# snps_out <- "example/snp_ids_rs_ids.txt"
-# #cluster_folder <- "data/ROSMAP/junction_counts/"
-
 
 # annotation - created by Leafcutter
-
-annotation_code <- "example/PTK2B_gencode_hg19"
-exon_file <- paste0(annotation_code, "_all_exons.txt.gz")
-all_introns <- paste0(annotation_code,"_all_introns.bed.gz" )
-threeprime_file <- paste0( annotation_code,"_threeprime.bed.gz")
-fiveprime_file <- paste0( annotation_code,"_fiveprime.bed.gz")
+annotation_code <- "example/gencode_hg19"
+exon_file <- paste0(annotation_code, "_all_exons.bed")
+all_introns <- paste0(annotation_code, "_all_introns.bed")
+threeprime_file <- paste0( annotation_code, "_threeprime.bed")
+fiveprime_file <- paste0( annotation_code, "_fiveprime.bed")
 
 exons_table <- if (!is.null( exon_file )) {
-  cat("Loading exons from",exon_file,"\n")
-  as.data.frame(fread(cmd = paste("zless",exon_file)) )
+  cat("Loading exons from", exon_file, "\n")
+  as.data.frame(fread(exon_file))
 } else {
   cat("No exon_file provided.\n")
   NULL
 }
 
-# samples
-
-#sampleTable <- read.table(sample_table,header=FALSE, stringsAsFactors = FALSE)
-
-# read in clusters
-
-# if( !file.exists(clusters_table) ){
-#
-#   # need to read in cluster file for each sample and merge together
-#   cluster_files <- list.files(cluster_folder, full.names = TRUE)
-#
-#   print("reading in clusters")
-#   # lovely piece of code this - read in each file and left join.
-#   # takes a while but does the job
-#   clusters <- cluster_files %>%
-#     map(~read_delim(., delim = " ") ) %>%
-#     reduce( left_join)
-#
-#   # save
-#   save(clusters, file = "data/ROSMAP/ROSMAP_all_samples_cluster_counts_ratios.Rdata")
-#
-#   #load("data/ROSMAP/ROSMAP_all_samples_cluster_counts_ratios.Rdata")
-#   # split out junction numbers - Towfique gave me the bloody fractions instead
-#   clusters_split <- clusters %>%
-#     map(~str_split_fixed(. , pattern = "/", n = 2) ) %>%
-#     map_df( `[`,1:nrow(clusters) ,1 )
-#
-#   d <- as.data.frame(clusters_split)
-#   # set row names
-#   row.names(d) <- d$chrom
-#   d$chrom <- NULL
-#   # convert to numeric
-#   d <- as.data.frame(data.matrix(d, rownames.force = TRUE))
-#
-#   clusters <- d
-#
-#   # sort out names
-#
-#   samples <- names(clusters)
-#
-#   names(sampleTable) <- c("sample_code", "bam_name")
-#
-#   # convert sampleTable$V2 to the scheme in the clusters_table
-#   sampleTable$cluster_samples <- sampleTable$bam_name %>%
-#     gsub("_", ".", ., fixed = TRUE) %>%
-#     gsub(".bam", ".final.bam", ., fixed = TRUE) %>%
-#     paste0("ROSMAP_STAR_", . )
-#
-#   # get numeric code for each sample
-#   renamed_samples <- sampleTable$sample_code[ match( samples, sampleTable$cluster_samples)]
-#
-#   # fix clusters with new names
-#   names(clusters) <- renamed_samples
-#
-#
-#   save( clusters, file = clusters_table)
-#   # find and harmonise sample names
-#
-#   # write out samples
-#   samples_file <- "data/ROSMAP/samples_to_use.txt"
-#   writeLines( text=as.character(renamed_samples), con = samples_file)
-# }else{
-#   message("reading in clusters")
-#   load(clusters_table)
-# }
-
-clusters <- read.table(clusters_table, header=TRUE, stringsAsFactors = FALSE, check.names = FALSE)
+# read in cluster counts
+clusters <- read.table(clusters_table, header = TRUE, stringsAsFactors = FALSE, check.names = FALSE)
 
 # read in junction x snp results
-
-
-
 print("reading in results")
 
-res <- as.data.frame(fread(permutation_res, header =TRUE), stringsAsFactors = FALSE)
-
+res <- as.data.frame(fread(permutation_res, header = TRUE), stringsAsFactors = FALSE)
 genotypes <- unique(res$dummy2)
-
-
-# genotypes do not have rs numbers - just chr:start values.
-# but this matches VCF so maybe not a problem yet
-# will need to match in rs numbers at some point, surely
-
-
-# write out genotypes
-#genotypes_file <- "data/ROSMAP/snps_to_use.txt"
-#writeLines(text= genotypes, con = genotypes_file)
 
 ######
 # PREPARE VCF GENOTYPES
 ######
 
-# use vcftools to filter out just the snps and samples required
-# print("filtering VCF")
-# vcf_filtered <- "data/ROSMAP/filtered_samples_snps"
-# vcf_filtered_full <- "data/ROSMAP/filtered_samples_snps.recode.vcf"
-# if( !file.exists(vcf_filtered_full)){
-#   cmd <- paste( "vcftools --gzvcf", VCF,  "--snps", genotypes_file, "--keep", samples_file, "--recode --out", vcf_filtered )
-#   system(cmd)
-# }
-#
+vcf <- read.table(file = VCF, header = TRUE, check.names = FALSE)
 
-vcf <- read.table(file =  VCF, header=TRUE,check.names = FALSE)
+vcf[vcf$REF == TRUE]$REF <- "T"
+vcf[vcf$ALT == TRUE]$ALT <- "T"
 
-vcf$REF[vcf$REF == TRUE] <- "T"
-vcf$ALT[vcf$ALT == TRUE] <- "T"
-
-
-###
-## FIX SNP IDS
-
-# fix association results
-# snps <- read.table(snps_out, header=TRUE)
-#
-# res$dummy2 <- gsub(":", ".", paste0(snps$RS_id,".", snps$dummy2))
-# # fix vcf
-# vcf_snp_ids <- gsub(":", ".", paste0(snps$RS_id,".", snps$dummy2))[ match( vcf$ID, snps$dummy2)]
-# vcf$ID <- vcf_snp_ids
-
-# get_vcf_meta <- function(vcf){
-#   # take a VCF and split out the meta data
-#   # to use for querying
-#   vcf_meta <-  as.data.frame(str_split_fixed(vcf$ID, "\\.", 3), stringsAsFactors = FALSE)
-#   vcf_meta$SNP_pos <- paste(vcf_meta$V2, vcf_meta$V3, sep = ":")
-#   vcf_meta <- data.frame( SNP = vcf_meta$V1, SNP_pos = vcf_meta$SNP_pos, REF = vcf$REF, ALT = vcf$ALT, stringsAsFactors = FALSE)
-#   return(vcf_meta)
-# }
 vcf_meta <- sqtlviztools::get_vcf_meta(vcf)
-
 
 ##################
 # PREPARE CLUSTERS
 ##################
 
 # from significant associations
-sigClusters <- str_split_fixed(res[,1], ":",4)[,4]
-### add Nalls' GWAS SNP clusters and Yang's too!
-#sigClusters <- c(sigClusters, gwas_clusters, yang_clusters)
+sigClusters <- str_split_fixed(res[, 1], ":", 4)[, 4]
 
-introns <- leafcutter::get_intron_meta(row.names(clusters) )
-keepClusters <- match(introns$clu,sigClusters)
+introns <- leafcutter::get_intron_meta(row.names(clusters))
+keepClusters <- match(introns$clu, sigClusters)
 
 # remove non-significant (or non-GWAS SNP-associated) clusters
-introns <- introns[ !is.na(keepClusters),]
-clusters <- clusters[ !is.na(keepClusters),]
+introns <- introns[!is.na(keepClusters),]
+clusters <- clusters[!is.na(keepClusters),]
 
 # rearrange sample columns in clusters so they match the VCF
+vcf <- cbind(vcf[, 1:9], vcf[, 10:ncol(vcf)][, colnames(vcf[, 10:ncol(vcf)]) %in% colnames(clusters)])
 samples <- names(vcf)[10:ncol(vcf)]
 clusters <- clusters[, samples]
 
 introns_to_plot <- get_intron_meta(row.names(clusters))
 
 # thin down junctions in clusters - remove low contributing junctions
-
 juncProp <- function(cluster){
   cluster$prop <- cluster$meanCount / sum(cluster$meanCount)
   return(cluster)
@@ -211,19 +168,20 @@ juncProp <- function(cluster){
 splitClusters <- introns_to_plot %>%
   mutate(
     clu = factor(.$clu, levels = unique(.$clu)),
-    meanCount = rowMeans(clusters) ) %>%
-  split( .$clu ) %>%
-  purrr::map_df( juncProp ) %>%
-  mutate( clu = as.character(.$clu))
+    meanCount = rowMeans(clusters)) %>%
+  split(.$clu) %>%
+  purrr::map_df(juncProp) %>%
+  mutate(clu = as.character(.$clu))
 
 # thinning out clusters - turn off for now - this needs to be worked on
 thinClusters <- FALSE
 
-if( thinClusters == TRUE){
-  introns_to_plot <- introns_to_plot[ splitClusters$prop >= 0.01,]
-  clusters <- clusters[ splitClusters$prop >= 0.01,]
-  introns <- introns[ splitClusters$prop >= 0.01,]
+if (thinClusters == TRUE) {
+  introns_to_plot <- introns_to_plot[splitClusters$prop >= 0.01,]
+  clusters <- clusters[splitClusters$prop >= 0.01,]
+  introns <- introns[splitClusters$prop >= 0.01,]
 }
+
 ####################
 # ANNOTATE JUNCTIONS
 ####################
@@ -237,65 +195,32 @@ all.introns_intersect <- intersects[[3]]
 
 print("Annotating junctions")
 
-uniqueClusters <- unique( introns$clu )
-
-# for testing
-#save( introns, uniqueClusters, fiveprime_intersect,threeprime_intersect,all.introns_intersect, file = "annotation_test.Rdata")
-#load(file="~/Documents/sQTLviz/annotation_test.Rdata")
-#annotate_single_cluster(introns, clu = uniqueClusters[1], cluIndex=1)
+uniqueClusters <- unique(introns$clu)
 
 # for debugging
-
 save.image("debug.RData")
 
-annotatedClusters <- purrr::map_df( seq_along(uniqueClusters),
-                                    ~annotate_single_cluster( introns,
-                                                              clu = uniqueClusters[.],
-                                                              cluIndex = .,
-                                                              fiveprime=fiveprime_intersect,
-                                                              threeprime=threeprime_intersect,
-                                                              bothSS=all.introns_intersect
-                                                              )
+annotatedClusters <- purrr::map_df(seq_along(uniqueClusters),
+                                   ~annotate_single_cluster(introns,
+                                                            clu = uniqueClusters[.],
+                                                            cluIndex = .,
+                                                            fiveprime = fiveprime_intersect,
+                                                            threeprime = threeprime_intersect,
+                                                            bothSS = all.introns_intersect
+                                                            )
                                     )
 
-annotatedClusters$gene[ is.na( annotatedClusters$gene) ] <- "."
-annotatedClusters$ensemblID[ is.na( annotatedClusters$ensemblID) ] <- "."
+annotatedClusters[is.na(annotatedClusters$gene),]$gene <- "."
+annotatedClusters[is.na(annotatedClusters$ensemblID),]$ensemblID <- "."
 
 #################
 # PREPARE RESULTS - MOST SIGNIFICANT SNP x JUNCTION
 #################
 
-
-# get_snp_meta <- function(snps){
-#   snp_meta <-  as.data.frame(str_split_fixed(snps, "\\.", 3), stringsAsFactors = FALSE)
-#   colnames(snp_meta) <- c("snp_ID", "snp_chr", "snp_pos")
-#   # a few snps don't have any IDs - just the coordinates
-#   noID <- snp_meta[ grepl("\\.", snp_meta$snp_pos),]
-#   noID <- select(noID, snp_pos, snp_ID, snp_chr)
-#   names(noID) <- c("snp_ID", "snp_chr","snp_pos")
-#   # put back in
-#   snp_meta[ grepl("\\.", snp_meta$snp_pos),] <- noID
-#
-#   snp_meta$snp_pos <- as.numeric(snp_meta$snp_pos)
-#   return(snp_meta)
-# }
-
-# format of SNPs in res should be rs140285343.chr10.75132726
-#snpConversion <- fread(paste("zless",snp_conversion), header=FALSE, data.table=FALSE)
-#anames(snpConversion) <- c("coord", "RS_id")
-#snps <- res[,2,drop=FALSE]
-#snps$RS_id <- snpConversion$V2[ match( snps$dummy2, snpConversion$V1)]
-#write.table(snps, file = snps_out, col.names = TRUE, row.names=FALSE, sep = "\t", quote =FALSE)
-
-## the results table should consist of a list of clusters with their most significant SNP
-# bind intron_meta, intron, snp, p value, snp_meta
-#sigJunctions <- cbind( get_intron_meta( res[,1]), res[, c(1,6,11)], get_snp_meta(res[,6]))
-
-# use associations with q < 0.05 cut-off.
 # Bind together metadata with original results
-sigJunctions <- cbind( get_intron_meta( res[,1]),
-                       res[, c(1,2,3)],
-                       get_snp_meta(res[,2]))
+sigJunctions <- cbind(get_intron_meta(res[, 1]),
+                      res[, c(1, 2, 3)],
+                      get_snp_meta(res[, 2]))
 
 # sometimes there will be duplicates - remove!
 sigJunctions <- dplyr::distinct(sigJunctions)
@@ -304,13 +229,13 @@ sigJunctions <- dplyr::distinct(sigJunctions)
 # present most significant junction for each SNP?
 # or most significant SNP for each junction?
 resultsByCluster <- dplyr::group_by(sigJunctions[order(sigJunctions$bpval),], clu) %>%
-  dplyr::summarise( chr = first(chr),
-                    start = min(start),
-                    end = max(end),
-                    snp = first(snp_ID),
-                    snp_chr = first(snp_chr),
-                    pos = first(snp_pos),
-                    FDR = first(bpval) ) %>%
+  dplyr::summarise(chr = first(chr),
+                   start = min(start),
+                   end = max(end),
+                   snp = first(snp_ID),
+                   snp_chr = first(snp_chr),
+                   pos = first(snp_pos),
+                   FDR = first(bpval)) %>%
   dplyr::arrange(FDR)
 
 ####
@@ -320,124 +245,88 @@ resultsByCluster <- dplyr::group_by(sigJunctions[order(sigJunctions$bpval),], cl
 code <- "example"
 annotation_code <- "gencode_hg19"
 
-resultsByCluster$gene <- annotatedClusters$gene[ match(resultsByCluster$clu, annotatedClusters$clusterID)]
+resultsByCluster$gene <- annotatedClusters$gene[match(resultsByCluster$clu, annotatedClusters$clusterID)]
 resultsByCluster$SNP_pos <- paste0(resultsByCluster$snp_chr, ":", resultsByCluster$pos)
 
-# fix coords without "chr"
-# if( all( !grepl("chr", sample(resultsByCluster$chr, 100)) ) ){
-#   resultsByCluster$chr <- paste0("chr", resultsByCluster$chr)
-# }
+resultsByCluster$cluster_pos = paste0(resultsByCluster$chr, ":", resultsByCluster$start, "-", resultsByCluster$end)
 
-resultsByCluster$cluster_pos = paste0(resultsByCluster$chr,":", resultsByCluster$start,"-",resultsByCluster$end)
-
-resultsToPlot <- as.data.frame( select( resultsByCluster,
-                                        SNP = snp,
-                                        SNP_pos,
-                                        gene = gene,
-                                        cluster_pos,
-                                        q = FDR
-) )
+resultsToPlot <- as.data.frame(select(resultsByCluster,
+                                      SNP = snp,
+                                      SNP_pos,
+                                      gene = gene,
+                                      cluster_pos,
+                                      q = FDR
+))
 
 row.names(resultsToPlot) <- resultsByCluster$clu
 
-resultsToPlot$q <- signif(resultsToPlot$q,  digits = 3)
+resultsToPlot$q <- signif(resultsToPlot$q, digits = 3)
 
 #########
 ## GET BETAS FOR EACH JUNCTION
 #########
 
-
-# for testing - until I get full assocations table
-#junctionTable <- NULL
-
-
-# get the Betas and per-junction q values
-# perm_full <- read_delim( permutation_full_res,
-#                          col_names = c("clusterID", "SNP","X","FDR", "Beta"),
-#                          col_types = "ccinn",
-#                          delim = " "
-# )
-perm_full <- fread(cmd = paste("zless", permutation_full_res), data.table=FALSE)
+perm_full <- fread(permutation_full_res, data.table = FALSE)
 names(perm_full) <- c("clusterID", "SNP","X","FDR", "Beta")
 
 junctionsNeeded <- introns_to_plot %>%
-    mutate( chr = gsub("chr", "", chr)) %>%
-    mutate( cluster = paste( chr, start, end, clu, sep = ":") ) %>%
-    pull( cluster )
+  mutate(chr = gsub("chr", "", chr)) %>%
+  mutate(cluster = paste(chr, start, end, clu, sep = ":")) %>%
+  pull(cluster)
 
-#perm_clean <- filter( perm_full, clusterID %in% junctionsNeeded )
-snps <- read.table(file = "example/snp_ids_rs_ids.txt", stringsAsFactors = FALSE, header=TRUE)
+snps <- read.table(file = "example/snp_ids_rs_ids.txt", stringsAsFactors = FALSE, header = TRUE)
 
 perm_full$RS_id <- snps$RS_id[ match(perm_full$SNP, snps$dummy2)]
 
-#perm_clean$RS_id <- snps$RS_id[ match( perm_clean$SNP, snps$dummy2)]
 perm_clean <- perm_full %>%
-  filter( clusterID %in% junctionsNeeded ) %>%
-  #mutate( RS_id = snps$RS_id[ match( SNP, snps$dummy2)] ) %>%
-  filter( !is.na( RS_id)) %>%
-  filter( clusterID %in% junctionsNeeded ) %>%
-  mutate( SNP_ID = gsub(":", ".", paste0(RS_id,".", SNP)))
+  filter(clusterID %in% junctionsNeeded) %>%
+  filter(!is.na(RS_id)) %>%
+  filter(clusterID %in% junctionsNeeded) %>%
+  mutate(SNP_ID = gsub(":", ".", paste0(RS_id, ".", SNP)))
 
 # sort out SNP IDs
-perm_clean <- select(perm_clean, clusterID, SNP=SNP_ID, Beta, FDR)
+perm_clean <- select(perm_clean, clusterID, SNP = SNP_ID, Beta, FDR)
 
-perm_clean <- cbind( perm_clean,
-                     get_intron_meta(perm_clean$clusterID),
-                     get_snp_meta(perm_clean$SNP) )
+perm_clean <- cbind(perm_clean,
+                    get_intron_meta(perm_clean$clusterID),
+                    get_snp_meta(perm_clean$SNP))
 
 perm_clean$snp_chr <- paste0("chr", perm_clean$snp_chr)
 
-
 # junction table - each junction with Beta, P value and annotation
 junctionTable <- resultsToPlot %>%
-  mutate( clu = row.names(resultsToPlot) ) %>%
-  left_join(introns_to_plot, by = "clu" ) %>%
+  mutate(clu = row.names(resultsToPlot)) %>%
+  left_join(introns_to_plot, by = "clu") %>%
   rename(snp_ID = SNP) %>%
-  left_join( perm_clean,
-             by = c("chr" = "snp_chr", "start", "end", "snp_ID", "clu", "middle")
+  left_join(perm_clean,
+            by = c("chr" = "snp_chr", "start", "end", "snp_ID", "clu", "middle")
   ) %>%
-  mutate(coord = paste0( chr, ":", start, "-", end)) %>%
-  left_join( annotatedClusters,
-             by = c("clu" = "clusterID", "coord" )
+  mutate(coord = paste0(chr, ":", start, "-", end)) %>%
+  left_join(annotatedClusters,
+            by = c("clu" = "clusterID", "coord" )
   ) %>%
   select(clu, coord, verdict, Beta, q = FDR) %>%
-  mutate( Beta = signif(Beta, digits = 3),
-          q = signif(q, digits = 3)) %>%
-  mutate( Beta = ifelse(is.na(Beta), ".", Beta),
-          q = ifelse(is.na(q), ".", q))
-
-# why are some of the q values greater than 1?
-
+  mutate(Beta = signif(Beta, digits = 3),
+         q = signif(q, digits = 3)) %>%
+  mutate(Beta = ifelse(is.na(Beta), ".", Beta),
+         q = ifelse(is.na(q), ".", q))
 
 #########
 ## SAVE OBJECTS
 #########
-# too big
 rm(perm_full)
-#save.image("example_data.Rdata")
-print("saving objects")
-save( annotatedClusters, # every junction needed
-      sigJunctions, # every junction x SNP interaction
-      resultsToPlot, #significant clusters and the most significant SNP
-      #GWASresults, # associations with SNPs from a PD GWAS
-      #YangResults, # associations with Yang's TWAS hit SNPs
-      clusters, # junction counts for each sample
-      vcf,# the genotypes of each sample
-      vcf_meta, # the vcf metadata
-      introns_to_plot, # all the intron positions
-      #counts,
-      #meta,
-      exons_table, # the annotation
-      junctionTable, # the junctions to display for each cluster
-      #pca,
-      #intron_summary,
-      #cluster_summary,
-      #introns_to_plot,
-      #cluster_ids,
-      #sample_table,
-      annotation_code,
-      code,
-      file = "shiny/sQTL_results.Rdata"
-)
 
-#load("data/ROSMAP/all_data.Rdata")
+print("saving objects")
+save(annotatedClusters, # every junction needed
+     sigJunctions, # every junction x SNP interaction
+     resultsToPlot, #significant clusters and the most significant SNP
+     clusters, # junction counts for each sample
+     vcf,# the genotypes of each sample
+     vcf_meta, # the vcf metadata
+     introns_to_plot, # all the intron positions
+     exons_table, # the annotation
+     junctionTable, # the junctions to display for each cluster
+     annotation_code,
+     code,
+     file = "shiny/sQTL_results.Rdata"
+)
