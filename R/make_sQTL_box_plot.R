@@ -1,29 +1,16 @@
-#  sel <- 1
-#  cluster_to_plot = row.names(resultsToPlot)[sel]
-#  # get lowest p value junction in cluster to start
-#  all_junctions = sigJunctions
-#  junction_to_plot= all_junctions[all_junctions$clu==cluster_to_plot,]
-#  junction_to_plot = junction_to_plot[ which( junction_to_plot$bpval == min(junction_to_plot$bpval) ), ]$pid
-# #                    main_title = "test"
-#                    vcf=vcf
-#                     vcf_meta=vcf_meta
-#                     exons_table = exons_table
-#                     counts = clusters
-#                     introns = annotatedClusters
-#                     cluster_ids = annotatedClusters$clusterID
-#                     snp_pos = resultsToPlot[sel,]$SNP_pos
-#                     snp = resultsToPlot[sel,]$SNP
-# #
-# #
-#
-
-
 #' Make genotype x junction count box plots
 #'
 #' @import ggplot2
 #' @import ggbeeswarm
 #' @import dplyr
 #' @export
+
+saveSwarmPlot <- function(myPlot) {
+  pdf("~/Desktop/swarm_plot.pdf", height = 5, width = 3)
+  print(myPlot)
+  dev.off()
+}
+
 make_sQTL_box_plot <- function(
   cluster_to_plot,
   all_junctions = NA,
@@ -39,14 +26,7 @@ make_sQTL_box_plot <- function(
   junctionTable = NA,
   snp = snp ){
 
-  #print("HELLO JACK")
-  #print(junction_to_plot)
-
-  #print(snp)
-
-  stopifnot( snp %in% vcf_meta$SNP )
-
-  # sometimes chr is missing
+  stopifnot(snp %in% vcf_meta$SNP)
 
   if( !grepl("^chr", junction_to_plot)){
     junction_to_plot <- paste0("chr", junction_to_plot)
@@ -55,18 +35,12 @@ make_sQTL_box_plot <- function(
   # subset VCF and get genotype groups
   vcfIndex <- which( vcf_meta$SNP == snp)
   VCF <- vcf[vcfIndex,10:ncol(vcf)]
-  #table(t(VCF) )
-  #for testing!
 
   VCF_meta <- vcf_meta[vcfIndex,]
-  #message("I AM INSIDE YOUR CODE")
   meta <- as.data.frame(t(VCF))
 
   print(VCF_meta)
-  #print(meta)
-  #message("YO")
   meta$group=as.factor(meta[,1])
-  #message("DAWG")
   group_names <- c(0,1,2)
   names(group_names) <- c(
     paste0( VCF_meta$REF, "/", VCF_meta$REF),
@@ -74,31 +48,23 @@ make_sQTL_box_plot <- function(
     paste0( VCF_meta$ALT, "/", VCF_meta$ALT)
   )
 
-  #print(group_names)
-  #message("BOYYYYYY")
   y <- t(counts[ cluster_ids==cluster_to_plot, ])
   # for each sample divide each junction count by the total for that sample
   normalisedCounts <- as.data.frame(sweep(y, 1, rowSums(y), "/"))
-  #message("HELLO BOY")
   genotypes <- as.data.frame(t(VCF))
   names(genotypes)[1] <- "geno"
-  #message("WHEEWWWW LADDDY")
   normalisedCounts$genotypeCode <- genotypes$geno[ match( row.names(normalisedCounts), row.names(genotypes))]
   normalisedCounts <- normalisedCounts[ complete.cases(normalisedCounts),]
 
   normalisedCounts$genotype <- names(group_names)[ match(normalisedCounts$genotypeCode, group_names)]
 
   print(head(normalisedCounts))
-  #message("GREAT TO MEET YOU")
 
   toPlot <- dplyr::select( normalisedCounts,
                     junction = junction_to_plot,
                     geno =  "genotype")
 
- # message("I AM BEAT")
   toPlot$geno <- factor(toPlot$geno, levels = (names(group_names))) # this was reversed
-
-  #message("HELLO AGAIN LADDY")
 
   # get junction information for title
   junc <- dplyr::mutate(junctionTable,
@@ -106,17 +72,32 @@ make_sQTL_box_plot <- function(
                  ) %>%
     dplyr::filter( j == junction_to_plot )
 
-  values <- paste( signif(as.numeric(junc$Beta),3)," q =", signif(as.numeric(junc$q),3) )
-  #message("STILL HERE BOY")
-  plot <- ggplot( data = toPlot, aes(x = geno, y = junction, group = geno ) ) +
-    geom_boxplot(outlier.colour = NA, fill = "orange") +
-    geom_quasirandom(size = 0.8) + #coord_flip() +
+  values <- paste( signif(as.numeric(junc$Beta),3)," p =", signif(as.numeric(junc$q), 3) )
+
+  # Function to produce summary statistics (mean and +/- sd)
+  data_summary <- function(x) {
+    m <- mean(x)
+    ymin <- m - sd(x)
+    ymax <- m + sd(x)
+    return(c(y = m, ymin = ymin, ymax = ymax))
+  }
+  
+  # toPlot$geno <- factor(toPlot$geno, rev(levels(toPlot$geno)))
+  
+  plot <- ggplot(data = toPlot, aes(x = geno, y = junction, group = geno, color = geno)) +
+    geom_quasirandom(size = 1) +
+    stat_summary(fun.data = data_summary, color = "black") +
     theme_classic() +
-    theme(axis.title.y = element_text( angle = 90 ) ) +
-    ylab("contribution to cluster") +
+    theme(axis.title.y = element_text(angle = 90), legend.position = "none", axis.text = element_text(color = "black")) +
+    ylab("relative intron representation") +
     xlab("") +
     labs(title = junc$coord,
-         subtitle = bquote(beta==.(values)) )
-
+         subtitle = bquote(beta == .(values))) + 
+    scale_color_brewer(palette = "Dark2") +
+    # coord_flip() +
+    NULL
+  
+  saveSwarmPlot(plot)
+  
   return(plot)
 }
