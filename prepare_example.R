@@ -7,19 +7,20 @@ library(readr)
 library(sqtlviztools)
 library(qvalue)
 
-## set the parameters below
-cluster_id <- "clu_856_NA"
-target_variant <- "14_92931878_C_T_b37"
-target_gene <- "SLC24A4"
+setwd("~/Desktop/sqtlviztools-master/")
+
 permutation_sqtl_file <- "WHLBLD.permutations_full.txt.gz"
 vcf_file <- "sqtl.vcf"
 cluster_counts_file <- "Ne-sQTL_perind_numers.counts.gz"
 srr2subject_file <- "srr2subject.txt"
+sprime_file <- "sprime_calls.txt.gz"
 
 ## reformat VCF
 input_vcf <- fread(vcf_file) %>%
   setnames(., "#CHROM", "CHROM")
 input_vcf[, 10:ncol(input_vcf)] <- as.data.frame(apply(input_vcf[, 10:ncol(input_vcf)], MAR = c(1, 2), FUN = function(x) if (x == "0/0") {return(0)} else if (x == "0/1") {return(1)} else if (x == "1/1") {return(2)} else if (x == "./.") {return("NA")} ))
+
+variant_list <- input_vcf$ID
 
 input_vcf[, ID := paste(ID, CHROM, POS, sep = ".")]
 
@@ -37,7 +38,6 @@ srr2subject <- fread(srr2subject_file)
 new_colnames <- srr2subject$submitted_subject_id[match(colnames(input_cc), srr2subject$Run)]
 setnames(input_cc, new_colnames)
 
-input_cc <- input_cc[grepl(cluster_id, V1)]
 fwrite(input_cc, "example/cluster_counts_temp.txt", sep = "\t", quote = TRUE, col.names = TRUE, row.names = FALSE)
 system("head -1 example/cluster_counts_temp.txt | cut -f2- > example/cluster_counts.txt")
 system("sed -e1,1d example/cluster_counts_temp.txt >> example/cluster_counts.txt")
@@ -53,7 +53,7 @@ gtp <- fread(permutation_sqtl_file) %>%
 
 gtp[, qval := qvalue(gtp$adj_p)$qvalues]
 
-neand <- fread("sprime_calls.txt.gz")[vindija_match == "match" | altai_match == "match"] %>%
+neand <- fread(sprime_file)[vindija_match == "match" | altai_match == "match"] %>%
   mutate(., var_id = paste(CHROM, POS, REF, ALT, "b37", sep = "_")) %>%
   as.data.table()
 
@@ -64,30 +64,32 @@ gtp[, is_neand := variant_id %in% neand$var_id]
 gtp[, dummy2 := paste(variant_id, variant_chrom, var_start, sep = ".")]
 gtp[, dummy3 := paste(variant_chrom, var_start, sep = ":")]
 
-pp_all <- gtp[variant_id == target_variant, c("intron_cluster", "dummy2", "adj_p")] %>%
+gtp <- gtp[variant_id %in% variant_list]
+
+pp_all <- gtp[, c("intron_cluster", "dummy2", "adj_p")] %>%
   setnames(., c("pid", "dummy2", "bpval"))
 fwrite(pp_all, "example/example_permutations.all.0.05.bh.txt", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
 
 # https://groups.google.com/forum/#!topic/leafcutter-users/Hb0S2aZBWtw
-pp_full <- gtp[variant_id == target_variant, c("intron_cluster", "dummy3", "distance", "adj_p", "beta")]
+pp_full <- gtp[, c("intron_cluster", "dummy3", "distance", "adj_p", "beta")]
 fwrite(pp_full, "example/example_permutations.full.0.05.bh.txt", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
 
-input_ids <- gtp[variant_id == target_variant, c("dummy3", "variant_id")] %>%
+input_ids <- gtp[, c("dummy3", "variant_id")] %>%
   setnames(., c("dummy2", "RS_id"))
 fwrite(input_ids, "example/snp_ids_rs_ids.txt", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
 
 ## reformat bed files
 exons <- fread("gencode_hg19_all_exons.bed.gz")
-fwrite(exons[gene_name == target_gene], "example/gencode_hg19_all_exons.bed", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
+fwrite(exons, "example/gencode_hg19_all_exons.bed", sep = "\t", quote = FALSE, col.names = TRUE, row.names = FALSE)
 
 introns <- fread("gencode_hg19_all_introns.bed.gz")[, c(1:7, 9, 8, 10)]
-fwrite(introns[V4 == target_gene], "example/gencode_hg19_all_introns.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+fwrite(introns, "example/gencode_hg19_all_introns.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
 
 five_prime <- fread("gencode_hg19_fiveprime.bed.gz")
-fwrite(five_prime[V4 == target_gene], "example/gencode_hg19_fiveprime.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+fwrite(five_prime, "example/gencode_hg19_fiveprime.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
 
 three_prime <- fread("gencode_hg19_threeprime.bed.gz")
-fwrite(three_prime[V4 == target_gene], "example/gencode_hg19_threeprime.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
+fwrite(three_prime, "example/gencode_hg19_threeprime.bed", sep = "\t", quote = FALSE, col.names = FALSE, row.names = FALSE)
 
 # clear workspace
 rm(list = ls())
@@ -207,8 +209,8 @@ annotatedClusters <- purrr::map_df(seq_along(uniqueClusters),
                                                             fiveprime = fiveprime_intersect,
                                                             threeprime = threeprime_intersect,
                                                             bothSS = all.introns_intersect
-                                                            )
-                                    )
+                                   )
+)
 
 annotatedClusters[is.na(annotatedClusters$gene),]$gene <- "."
 annotatedClusters[is.na(annotatedClusters$ensemblID),]$ensemblID <- "."
@@ -330,3 +332,5 @@ save(annotatedClusters, # every junction needed
      code,
      file = "shiny/sQTL_results.Rdata"
 )
+
+
